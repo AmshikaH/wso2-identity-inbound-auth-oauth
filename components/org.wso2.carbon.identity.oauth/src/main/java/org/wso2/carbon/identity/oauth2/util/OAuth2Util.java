@@ -141,6 +141,7 @@ import org.wso2.carbon.identity.oauth2.internal.OAuth2ServiceComponentHolder;
 import org.wso2.carbon.identity.oauth2.model.AccessTokenDO;
 import org.wso2.carbon.identity.oauth2.model.ClientAuthenticationMethodModel;
 import org.wso2.carbon.identity.oauth2.model.ClientCredentialDO;
+import org.wso2.carbon.identity.oauth2.model.HttpRequestHeader;
 import org.wso2.carbon.identity.oauth2.token.JWTTokenIssuer;
 import org.wso2.carbon.identity.oauth2.token.OAuthTokenReqMessageContext;
 import org.wso2.carbon.identity.oauth2.token.OauthTokenIssuer;
@@ -174,6 +175,7 @@ import org.wso2.carbon.utils.multitenancy.MultitenantUtils;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.net.HttpCookie;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
@@ -209,8 +211,10 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import javax.servlet.http.HttpServletRequest;
+import javax.ws.rs.core.HttpHeaders;
 import javax.xml.namespace.QName;
 
+import static org.wso2.carbon.identity.application.authentication.framework.util.FrameworkConstants.COMMONAUTH_COOKIE;
 import static org.wso2.carbon.identity.application.authentication.framework.util.FrameworkConstants.ORGANIZATION_LOGIN_IDP_NAME;
 import static org.wso2.carbon.identity.application.authentication.framework.util.FrameworkConstants.USER_ID_CLAIM;
 import static org.wso2.carbon.identity.oauth.common.OAuthConstants.OAUTH_BUILD_ISSUER_WITH_HOSTNAME;
@@ -571,21 +575,6 @@ public class OAuth2Util {
                     + tenantDomain);
         }
 
-        ServiceProvider serviceProvider;
-        try {
-            serviceProvider = OAuth2ServiceComponentHolder.getApplicationMgtService()
-                    .getServiceProviderByClientId(clientId, OAuthConstants.Scope.OAUTH2, tenantDomain);
-        } catch (IdentityApplicationManagementException e) {
-            throw new IdentityOAuthAdminException("Error while retrieving the application details.", e);
-        }
-
-        if (serviceProvider == null || !serviceProvider.isApplicationEnabled()) {
-            if (log.isDebugEnabled()) {
-                log.debug("Application with the provided client_id: " + clientId + " is not enabled.");
-            }
-            return false;
-        }
-
         // Cache miss
         boolean isHashDisabled = isHashDisabled();
         String appClientSecret = appDO.getOauthConsumerSecret();
@@ -641,26 +630,6 @@ public class OAuth2Util {
         if (StringUtils.isNotEmpty(appTenant) && !isTenantActive(appTenant)) {
             throw new InvalidOAuthClientException("Cannot retrieve application inside deactivated tenant: "
                     + appTenant);
-        }
-
-        ServiceProvider serviceProvider;
-        try {
-            serviceProvider = OAuth2ServiceComponentHolder.getApplicationMgtService()
-                    .getServiceProviderByClientId(clientId, OAuthConstants.Scope.OAUTH2, appTenant);
-        } catch (IdentityApplicationManagementException e) {
-            throw new IdentityOAuthAdminException("Error while retrieving the application details.", e);
-        }
-
-        // Check if disabled application credentials are allowed for authentication
-        String configValue
-                = IdentityUtil.getProperty(OAuthConstants.ALLOW_DISABLED_APPLICATION_CREDENTIALS_FOR_AUTHENTICATION);
-        boolean allowDisabledAppCredentials = configValue != null ? Boolean.parseBoolean(configValue) : false;
-        
-        if (!allowDisabledAppCredentials && (serviceProvider == null || !serviceProvider.isApplicationEnabled())) {
-            if (log.isDebugEnabled()) {
-                log.debug("Application with the provided client_id: " + clientId + " is not enabled.");
-            }
-            return false;
         }
 
         // Cache miss
@@ -6321,5 +6290,47 @@ public class OAuth2Util {
         AbstractUserStoreManager userStoreManager = (AbstractUserStoreManager)
                 realmService.getTenantUserRealm(tenantId).getUserStoreManager();
         return userStoreManager.isExistingUser(MultitenantUtils.getTenantAwareUsername(userName));
+    }
+
+    /**
+     * Get token binding value from the request headers.
+     *
+     * @param oAuth2AccessTokenReqDTO OAuth2AccessTokenReqDTO
+     * @param cookieName              Cookie name
+     * @return Token binding value
+     */
+    public static Optional<String> getTokenBindingValue(OAuth2AccessTokenReqDTO oAuth2AccessTokenReqDTO,
+                                                        String cookieName) {
+
+        HttpRequestHeader[] httpRequestHeaders = oAuth2AccessTokenReqDTO.getHttpRequestHeaders();
+        if (ArrayUtils.isEmpty(httpRequestHeaders)) {
+            return Optional.empty();
+        }
+
+        for (HttpRequestHeader httpRequestHeader : httpRequestHeaders) {
+            if (HttpHeaders.COOKIE.equalsIgnoreCase(httpRequestHeader.getName())) {
+                if (ArrayUtils.isEmpty(httpRequestHeader.getValue())) {
+                    return Optional.empty();
+                }
+
+                String[] cookies = httpRequestHeader.getValue()[0].split(";");
+                String cookiePrefix = cookieName + "=";
+                for (String cookie : cookies) {
+                    if (StringUtils.isNotBlank(cookie) && cookie.trim().startsWith(cookiePrefix) &&
+                            !HttpCookie.parse(cookie).isEmpty()) {
+                        String cookieValue = HttpCookie.parse(cookie).get(0).getValue();
+                        if (StringUtils.isNotBlank(cookieValue)) {
+                            if (COMMONAUTH_COOKIE.equals(cookieName)) {
+                                // For sso-session binding, token binding value will be the session context id.
+                                return Optional.of(DigestUtils.sha256Hex(cookieValue));
+                            } else {
+                                return Optional.of(cookieValue);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return Optional.empty();
     }
 }

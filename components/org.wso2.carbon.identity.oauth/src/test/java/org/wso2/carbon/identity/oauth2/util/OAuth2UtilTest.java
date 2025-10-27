@@ -98,10 +98,12 @@ import org.wso2.carbon.identity.oauth2.client.authentication.OAuthClientAuthenti
 import org.wso2.carbon.identity.oauth2.client.authentication.OAuthClientAuthnException;
 import org.wso2.carbon.identity.oauth2.dao.AccessTokenDAO;
 import org.wso2.carbon.identity.oauth2.dao.OAuthTokenPersistenceFactory;
+import org.wso2.carbon.identity.oauth2.dto.OAuth2AccessTokenReqDTO;
 import org.wso2.carbon.identity.oauth2.internal.OAuth2ServiceComponentHolder;
 import org.wso2.carbon.identity.oauth2.model.AccessTokenDO;
 import org.wso2.carbon.identity.oauth2.model.ClientAuthenticationMethodModel;
 import org.wso2.carbon.identity.oauth2.model.ClientCredentialDO;
+import org.wso2.carbon.identity.oauth2.model.HttpRequestHeader;
 import org.wso2.carbon.identity.oauth2.token.OAuthTokenReqMessageContext;
 import org.wso2.carbon.identity.oauth2.token.OauthTokenIssuer;
 import org.wso2.carbon.identity.oauth2.token.handlers.grant.AuthorizationGrantHandler;
@@ -137,6 +139,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Random;
 import java.util.Set;
 import java.util.function.Supplier;
@@ -148,7 +151,6 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
@@ -209,6 +211,14 @@ public class OAuth2UtilTest {
     private static final String ES256 = "ES256";
     private static final String PS256 = "PS256";
     private static final String ES384 = "ES384";
+    private static final String COMMONAUTH_COOKIE = "commonAuthId";
+    private static final String TEST_TOKEN_IDENTIFIER = "test_token_identifier";
+    private static final String TEST_BINDING_VALUE = "test_binding_value";
+    private static final String TEST_BINDING_REFERENCE = "test_binding_reference";
+    private static final String TEST_USER_ID = "test-user-id";
+    private static final String TEST_COOKIE_NAME = "test-cookie";
+    private static final String TEST_COOKIE_VALUE = "test-cookie-value";
+    private static final String COOKIE_HEADER = "Cookie";
 
     @Mock
     private OAuthServerConfiguration oauthServerConfigurationMock;
@@ -348,15 +358,6 @@ public class OAuth2UtilTest {
         identityKeyStoreResolverMockedStatic = mockStatic(IdentityKeyStoreResolver.class);
         identityKeyStoreResolverMockedStatic.when(IdentityKeyStoreResolver::getInstance)
                 .thenReturn(identityKeyStoreResolver);
-
-        ApplicationManagementService applicationManagementService = mock(ApplicationManagementService.class);
-        OAuth2ServiceComponentHolder.setApplicationMgtService(applicationManagementService);
-        ServiceProvider enabledSp = new ServiceProvider();
-        enabledSp.setApplicationName("dummyApp");
-        enabledSp.setApplicationEnabled(true);
-        // Handle both null and non-null tenant domain values.
-        lenient().when(applicationManagementService.getServiceProviderByClientId(anyString(), anyString(),
-                nullable(String.class))).thenReturn(enabledSp);
     }
 
     @AfterMethod
@@ -566,76 +567,6 @@ public class OAuth2UtilTest {
 
                 when(oauthServerConfigurationMock.getPersistenceProcessor()).thenReturn(hashingProcessor);
                 assertEquals(OAuth2Util.authenticateClient(clientId, clientSecret), expectedResult);
-            }
-        }
-    }
-
-    @DataProvider(name = "AuthenticateClientForDisabledApps")
-    public Object[][] authenticateClientForDisabledApps() {
-
-        OAuthAppDO cachedOAuthappDO = new OAuthAppDO();
-        cachedOAuthappDO.setOauthConsumerKey(clientId);
-        cachedOAuthappDO.setOauthConsumerSecret(clientSecret);
-
-        ServiceProvider enabledSp = new ServiceProvider();
-        enabledSp.setApplicationName("dummyApp");
-        enabledSp.setApplicationEnabled(true);
-
-        ServiceProvider disabledSp = new ServiceProvider();
-        disabledSp.setApplicationName("dummyApp");
-        disabledSp.setApplicationEnabled(false);
-
-        // cacheResult
-        // dummyClientSecret
-        // appTenant
-        // ServiceProvider
-        // expectedResult
-        return new Object[][]{
-                {cachedOAuthappDO, clientSecret, "tenant1", enabledSp, true},
-                {cachedOAuthappDO, clientSecret, "tenant1", disabledSp, false},
-                {cachedOAuthappDO, clientSecret, "tenant1", null, false},
-        };
-    }
-
-    @Test(dataProvider = "AuthenticateClientForDisabledApps")
-    public void testAuthenticateClientForDisabledApps(Object cacheResult, String clientSecretInDB, String appTenant,
-                                                      ServiceProvider serviceProvider, boolean expectedResult)
-            throws Exception {
-
-        try (MockedStatic<AppInfoCache> appInfoCache = mockStatic(AppInfoCache.class)) {
-            OAuthAppDO appDO = new OAuthAppDO();
-            appDO.setOauthConsumerKey(clientId);
-            appDO.setOauthConsumerSecret(clientSecretInDB);
-
-            // Mock the cache result
-            AppInfoCache mockAppInfoCache = mock(AppInfoCache.class);
-            when(mockAppInfoCache.getValueFromCache(clientId, appTenant)).thenReturn((OAuthAppDO) cacheResult);
-
-            appInfoCache.when(AppInfoCache::getInstance).thenReturn(mockAppInfoCache);
-
-            ApplicationManagementService applicationManagementService = mock(ApplicationManagementService.class);
-            OAuth2ServiceComponentHolder.setApplicationMgtService(applicationManagementService);
-
-            // Handle both null and non-null tenant domain values.
-            lenient().when(applicationManagementService.getServiceProviderByClientId(anyString(), anyString(),
-                    nullable(String.class))).thenReturn(serviceProvider);
-
-            // Mock realm and tenant manager.
-            when(oAuthComponentServiceHolderMock.getRealmService()).thenReturn(realmServiceMock);
-            when(realmServiceMock.getTenantManager()).thenReturn(tenantManagerMock);
-            when(tenantManagerMock.getTenantId(appTenant)).thenReturn(clientTenantId);
-            when(tenantManagerMock.isTenantActive(clientTenantId)).thenReturn(true);
-
-            // Mock the DB result
-            try (MockedConstruction<OAuthAppDAO> mockedConstruction = Mockito.mockConstruction(
-                    OAuthAppDAO.class,
-                    (mock, context) -> {
-                        when(mock.getAppInformation(clientId, -1234)).thenReturn(appDO);
-                    })) {
-
-                lenient().when(oauthServerConfigurationMock.getPersistenceProcessor()).thenReturn(
-                        new PlainTextPersistenceProcessor());
-                assertEquals(OAuth2Util.authenticateClient(clientId, clientSecret, appTenant), expectedResult);
             }
         }
     }
@@ -3556,5 +3487,48 @@ public class OAuth2UtilTest {
                 }
             }
         }
+    }
+
+    @DataProvider(name = "tokenBindingValueProvider")
+    public Object[][] tokenBindingValueProvider() {
+
+        String commonAuthCookieValue = "common-auth-cookie-value";
+        String hashedCommonAuthValue = DigestUtils.sha256Hex(commonAuthCookieValue);
+
+        HttpRequestHeader[] noHeaders = new HttpRequestHeader[0];
+        HttpRequestHeader[] headersWithCookie = new HttpRequestHeader[]{new HttpRequestHeader(COOKIE_HEADER,
+                TEST_COOKIE_NAME + "=" + TEST_COOKIE_VALUE)};
+        HttpRequestHeader[] headersWithCommonAuthCookie = new HttpRequestHeader[]{new HttpRequestHeader(COOKIE_HEADER,
+                COMMONAUTH_COOKIE + "=" + commonAuthCookieValue)};
+        HttpRequestHeader[] headersWithMultipleCookies = new HttpRequestHeader[]{new HttpRequestHeader(COOKIE_HEADER,
+                "some-cookie=some-value;" + TEST_COOKIE_NAME + "=" + TEST_COOKIE_VALUE)};
+        HttpRequestHeader[] headersWithBlankCookieValue = new HttpRequestHeader[]{new HttpRequestHeader(COOKIE_HEADER,
+                TEST_COOKIE_NAME + "=")};
+        HttpRequestHeader[] headersWithNoCookieHeader = new HttpRequestHeader[]{new HttpRequestHeader("Some-Header",
+                "some-value")};
+        HttpRequestHeader[] headersWithEmptyValue =
+                new HttpRequestHeader[]{new HttpRequestHeader(COOKIE_HEADER)};
+
+        return new Object[][]{
+                {null, TEST_COOKIE_NAME, Optional.empty()},
+                {noHeaders, TEST_COOKIE_NAME, Optional.empty()},
+                {headersWithCookie, TEST_COOKIE_NAME, Optional.of(TEST_COOKIE_VALUE)},
+                {headersWithCommonAuthCookie, COMMONAUTH_COOKIE, Optional.of(hashedCommonAuthValue)},
+                {headersWithMultipleCookies, TEST_COOKIE_NAME, Optional.of(TEST_COOKIE_VALUE)},
+                {headersWithBlankCookieValue, TEST_COOKIE_NAME, Optional.empty()},
+                {headersWithNoCookieHeader, TEST_COOKIE_NAME, Optional.empty()},
+                {headersWithCookie, "non-existent-cookie", Optional.empty()},
+                {headersWithEmptyValue, TEST_COOKIE_NAME, Optional.empty()}
+        };
+    }
+
+    @Test(dataProvider = "tokenBindingValueProvider")
+    public void testGetTokenBindingValue(HttpRequestHeader[] headers, String cookieName,
+                                         Optional<String> expectedValue) {
+
+        OAuth2AccessTokenReqDTO reqDTO = new OAuth2AccessTokenReqDTO();
+        reqDTO.setHttpRequestHeaders(headers);
+        Optional<String> tokenBindingValue = OAuth2Util.getTokenBindingValue(reqDTO, cookieName);
+        assertEquals(tokenBindingValue, expectedValue);
     }
 }
